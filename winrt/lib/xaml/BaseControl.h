@@ -7,6 +7,8 @@
 #include "RemoveFromVisualTree.h"
 #include "utils/LockUtilities.h"
 
+#include <Windows.UI.Xaml.Media.h>
+
 namespace ABI { namespace Microsoft { namespace Graphics { namespace Canvas { namespace UI { namespace Xaml
 {
     using namespace ::Microsoft::WRL::Wrappers;
@@ -128,6 +130,13 @@ namespace ABI { namespace Microsoft { namespace Graphics { namespace Canvas { na
         ComPtr<IDependencyObject> m_lastSeenParent;
 
         ComPtr<ICanvasDevice> m_customDevice;
+
+        enum class LoadAction
+        {
+            NoOp = 0,
+            Load = 1,
+            Unload = 2
+        };
 
     public:
         BaseControl(std::shared_ptr<adapter_t> adapter, bool useSharedDevice)
@@ -788,7 +797,8 @@ namespace ABI { namespace Microsoft { namespace Graphics { namespace Canvas { na
             return ExceptionBoundary(
                 [&]
                 {
-                    if (++m_loadedCount == 1)
+                    m_loadedCount++;
+                    if (GetLoadAction() == LoadAction::Load)
                     {
                         RegisterEventHandlers();
                         UpdateIsVisible();
@@ -825,7 +835,8 @@ namespace ABI { namespace Microsoft { namespace Graphics { namespace Canvas { na
             return ExceptionBoundary(
                 [&]
                 {
-                    if (--m_loadedCount == 0)
+                    m_loadedCount--;
+                    if (GetLoadAction() == LoadAction::Unload)
                     {
                         auto lock = GetLock();
                         m_isLoaded = false;
@@ -922,6 +933,38 @@ namespace ABI { namespace Microsoft { namespace Graphics { namespace Canvas { na
                     
                     WindowVisibilityChanged();
                 });
+        }
+
+        LoadAction GetLoadAction()
+        {
+            ComPtr<Media::IVisualTreeHelperStatics> visualTreeHelper;
+            GetActivationFactory(Wrappers::HStringReference(RuntimeClass_Windows_UI_Xaml_Media_VisualTreeHelper).Get(), visualTreeHelper.GetAddressOf());
+
+            ComPtr<IDependencyObject> control;
+            ComPtr<IDependencyObject> parent;
+
+            if (GetControl())
+            {
+                GetControl()->QueryInterface(__uuidof(IDependencyObject), (void**)(control.GetAddressOf()));
+                if (control)
+                {
+                    visualTreeHelper->GetParent(control.Get(), parent.GetAddressOf());
+                }
+            }
+
+            auto lock = GetLock();
+
+            if ((parent || (m_loadedCount > 0)) && !m_isLoaded)
+            {
+                return LoadAction::Load;
+            }
+
+            if ((!parent) && (m_loadedCount <= 0) && m_isLoaded)
+            {
+                return LoadAction::Unload;
+            }
+
+            return LoadAction::NoOp;
         }
     };
 
